@@ -13,9 +13,11 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from gh_notify.config import Config
+from gh_notify.main_window import MainWindow
 from gh_notify.models import NotificationEvent, PullRequest
 from gh_notify.notifier import Notifier
 from gh_notify.poller import Poller
+from gh_notify.pr_store import PrStore
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,10 @@ class GhNotifyApp:
         self._config = Config.load()
         self._notifier = Notifier()
         self._poller = Poller(self._config)
+        self._store = PrStore()
+
+        # Main window (created once, shown/hidden on demand)
+        self._main_window = MainWindow(self._store)
 
         self._review_prs: list[PullRequest] = []
         self._authored_prs: list[PullRequest] = []
@@ -96,6 +102,11 @@ class GhNotifyApp:
 
         # Context menu
         self._menu = QMenu()
+        self._open_action = self._menu.addAction("Open gh-notify")
+        self._open_action.triggered.connect(self._show_main_window)
+
+        self._menu.addSeparator()
+
         self._review_section_action = self._menu.addAction("— PRs Awaiting Review —")
         self._review_section_action.setEnabled(False)
         self._review_separator = self._menu.addSeparator()
@@ -147,8 +158,9 @@ class GhNotifyApp:
             self._tray.setIcon(self._icon_attention)
 
     def _on_review_prs_updated(self, prs: list[PullRequest]) -> None:
-        """Update the review PRs section in the context menu."""
+        """Update the review PRs via the store (triggers incremental UI updates)."""
         self._review_prs = prs
+        self._store.update_review_prs(prs)
         self._rebuild_menu()
 
         # Update icon based on whether there are review requests
@@ -160,8 +172,9 @@ class GhNotifyApp:
             self._tray.setToolTip("gh-notify — GitHub PR Monitor")
 
     def _on_authored_prs_updated(self, prs: list[PullRequest]) -> None:
-        """Update the authored PRs section in the context menu."""
+        """Update the authored PRs via the store (triggers incremental UI updates)."""
         self._authored_prs = prs
+        self._store.update_authored_prs(prs)
         self._rebuild_menu()
 
     def _on_error(self, message: str) -> None:
@@ -172,6 +185,11 @@ class GhNotifyApp:
     def _rebuild_menu(self) -> None:
         """Rebuild the context menu with current PR lists."""
         self._menu.clear()
+
+        # Open window action
+        open_action = self._menu.addAction("Open gh-notify")
+        open_action.triggered.connect(self._show_main_window)
+        self._menu.addSeparator()
 
         max_visible = 5
 
@@ -244,16 +262,25 @@ class GhNotifyApp:
             self._poll_frame += 1
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        """Handle tray icon activation (left click)."""
+        """Handle tray icon activation."""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            # Left click — show the context menu
-            self._tray.contextMenu().popup(self._tray.geometry().center())
+            # Left click — show/raise main window
+            self._show_main_window()
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
+            # Right click — context menu (handled automatically by setContextMenu)
+            pass
+
+    def _show_main_window(self) -> None:
+        """Show and raise the main window."""
+        self._main_window.show()
+        self._main_window.raise_()
+        self._main_window.activateWindow()
 
     def _open_settings(self) -> None:
         """Open the settings dialog."""
         from gh_notify.settings_dialog import SettingsDialog
 
-        dialog = SettingsDialog(self._config)
+        dialog = SettingsDialog(self._config, self._main_window)
         if dialog.exec():
             self._config = dialog.get_config()
             self._config.save()
