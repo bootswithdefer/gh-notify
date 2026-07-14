@@ -57,7 +57,13 @@ exclude_authors = []
 
 ## Autostart
 
-Copy the desktop file to autostart:
+Install the desktop file so KDE/XDG portals can find the app:
+
+```bash
+cp gh-notify.desktop ~/.local/share/applications/
+```
+
+For autostart on login:
 
 ```bash
 cp gh-notify.desktop ~/.config/autostart/
