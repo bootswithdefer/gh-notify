@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=gh-notify
+Comment=GitHub PR monitor with desktop notifications
+Exec=gh-notify
+Icon=gh-notify
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=false
+X-KDE-autostart-phase=2

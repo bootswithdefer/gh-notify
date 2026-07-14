@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="30" fill="#24292f" stroke="#444d56" stroke-width="2"/>
+  <!-- Pull request icon (merge arrow style) -->
+  <g fill="none" stroke="#58a6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Top source dot -->
+    <circle cx="22" cy="20" r="4" fill="#58a6ff"/>
+    <!-- Bottom source dot -->
+    <circle cx="22" cy="44" r="4" fill="#58a6ff"/>
+    <!-- Target dot -->
+    <circle cx="42" cy="44" r="4" fill="#58a6ff"/>
+    <!-- Vertical line from top to bottom -->
+    <line x1="22" y1="24" x2="22" y2="40"/>
+    <!-- Branch line from top to target -->
+    <path d="M 26 20 C 34 20, 42 28, 42 36"/>
+    <!-- Arrow head on branch -->
+    <polyline points="38,33 42,36 46,33"/>
+  </g>
+  <!-- Notification bell overlay (small, top-right) -->
+  <g transform="translate(42, 8) scale(0.7)">
+    <path d="M8 2 C8 1, 9 0, 10 0 C11 0, 12 1, 12 2 C15 3, 16 6, 16 9 L16 12 L18 14 L2 14 L4 12 L4 9 C4 6, 5 3, 8 2 Z" fill="#8b949e" stroke="none"/>
+    <ellipse cx="10" cy="16" rx="2" ry="1.5" fill="#8b949e"/>
+  </g>
+</svg>
