@@ -149,8 +149,13 @@ class GitHubClient:
         return all_notifications
 
     def fetch_review_requested_prs(self, username: str) -> list[PullRequest]:
-        """Fetch all open PRs where review is requested from the user."""
-        query = f"is:pr is:open review-requested:{username}"
+        """Fetch open PRs where review is pending from the user.
+
+        Uses review-requested (pending review) and excludes PRs the user
+        has already reviewed (reviewed-by removes you from the pending list
+        in GitHub's search index).
+        """
+        query = f"is:pr is:open review-requested:{username} -reviewed-by:{username}"
         return self._search_all_prs(query)
 
     def fetch_authored_prs(self, username: str) -> list[PullRequest]:
