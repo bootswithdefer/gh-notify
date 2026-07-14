@@ -100,10 +100,11 @@ class GitHubClient:
         return response.json()["login"]
 
     def fetch_notifications(self) -> list[dict[str, Any]]:
-        """Fetch all notification threads, respecting If-Modified-Since.
+        """Fetch recent notification threads, respecting If-Modified-Since.
 
         Returns empty list if nothing changed (304).
-        Paginates through all pages automatically.
+        Fetches up to 2 pages (100 notifications) — older ones are not actionable
+        for desktop notifications and would waste API quota.
         """
         headers: dict[str, str] = {}
         if self._last_modified:
@@ -113,8 +114,9 @@ class GitHubClient:
         all_notifications: list[dict[str, Any]] = []
         page = 1
         per_page = 50
+        max_pages = 2  # Cap at 100 notifications — beyond this is historical noise
 
-        while True:
+        while page <= max_pages:
             try:
                 response = client.get("/notifications", headers=headers, params={"all": "false", "per_page": per_page, "page": page})
             except httpx.RequestError as e:
