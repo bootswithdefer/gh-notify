@@ -8,7 +8,7 @@ import re
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 
 from gh_notify.config import Config
-from gh_notify.github_client import GitHubClient, GitHubClientError
+from gh_notify.github_client import GitHubClient, GitHubClientError, RateLimitError
 from gh_notify.models import NotificationEvent, NotificationType, PullRequest
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,19 @@ class _PollWorker(QObject):
             effective_ms = max(server_interval_ms, config_interval_ms)
             self.poll_interval_changed.emit(effective_ms)
 
+            # Report rate limit status
+            if client.rate_remaining is not None and client.rate_limit is not None:
+                self.progress.emit(f"Done — API quota: {client.rate_remaining}/{client.rate_limit}")
+
+        except RateLimitError as e:
+            import time
+
+            reset_in = max(0, e.reset_at - int(time.time()))
+            minutes = reset_in // 60
+            msg = f"Rate limited — resets in {minutes}m. Remaining: {e.remaining}"
+            logger.warning(msg)
+            self.progress.emit(msg)
+            self.error_occurred.emit(msg)
         except GitHubClientError as e:
             logger.exception("Polling error")
             self.error_occurred.emit(str(e))

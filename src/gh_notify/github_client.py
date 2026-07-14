@@ -21,8 +21,17 @@ class GitHubClientError(Exception):
     """Raised when GitHub API requests fail."""
 
 
+class RateLimitError(GitHubClientError):
+    """Raised when GitHub API rate limit is exceeded."""
+
+    def __init__(self, reset_at: int, remaining: int = 0) -> None:
+        self.reset_at = reset_at
+        self.remaining = remaining
+        super().__init__(f"Rate limited. Resets at {reset_at}")
+
+
 class GitHubClient:
-    """Async-capable GitHub API client using gh CLI token."""
+    """GitHub API client using gh CLI token with rate limit tracking and retry."""
 
     def __init__(self) -> None:
         self._token: str | None = None
@@ -30,6 +39,10 @@ class GitHubClient:
         self._last_modified: str | None = None
         self._poll_interval: int = 60
         self._username: str | None = None
+        # Rate limit state
+        self._rate_remaining: int | None = None
+        self._rate_limit: int | None = None
+        self._rate_reset: int | None = None  # Unix timestamp
 
     @property
     def poll_interval(self) -> int:
@@ -42,6 +55,21 @@ class GitHubClient:
         if self._username is None:
             self._username = self._fetch_username()
         return self._username
+
+    @property
+    def rate_remaining(self) -> int | None:
+        """Remaining API calls before rate limit."""
+        return self._rate_remaining
+
+    @property
+    def rate_limit(self) -> int | None:
+        """Total rate limit quota."""
+        return self._rate_limit
+
+    @property
+    def rate_reset(self) -> int | None:
+        """Unix timestamp when rate limit resets."""
+        return self._rate_reset
 
     def _get_token(self) -> str:
         """Get auth token from gh CLI."""
@@ -75,24 +103,69 @@ class GitHubClient:
         return self._client
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """Make an authenticated request to the GitHub API."""
+        """Make an authenticated request to the GitHub API.
+
+        Handles:
+        - Rate limit tracking (X-RateLimit-* headers)
+        - Rate limit enforcement (raises RateLimitError before calling if exhausted)
+        - Retry with backoff on 502/503 (up to 2 retries)
+        - Token refresh on 401
+        """
+        import time
+
+        # Check if we're rate limited before making the call
+        if self._rate_remaining is not None and self._rate_remaining <= 5:
+            now = int(time.time())
+            if self._rate_reset and now < self._rate_reset:
+                raise RateLimitError(self._rate_reset, self._rate_remaining)
+
         client = self._get_client()
-        try:
-            response = client.request(method, path, **kwargs)
-            response.raise_for_status()
-            return response
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                # Token might be stale, clear it and retry once
-                self._token = None
-                self._client = None
-                client = self._get_client()
+        max_retries = 2
+
+        for attempt in range(max_retries + 1):
+            try:
                 response = client.request(method, path, **kwargs)
+                self._update_rate_limit(response)
+
+                # Rate limited by server
+                if response.status_code == 403 and self._rate_remaining is not None and self._rate_remaining == 0:
+                    raise RateLimitError(self._rate_reset or 0, 0)
+
+                # Retry on transient server errors
+                if response.status_code in (502, 503) and attempt < max_retries:
+                    time.sleep(2**attempt)  # 1s, 2s backoff
+                    continue
+
                 response.raise_for_status()
                 return response
-            raise GitHubClientError(f"GitHub API error: {e.response.status_code} {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise GitHubClientError(f"GitHub API request failed: {e}") from e
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401 and attempt == 0:
+                    # Token might be stale, clear it and retry once
+                    self._token = None
+                    self._client = None
+                    client = self._get_client()
+                    continue
+                raise GitHubClientError(f"GitHub API error: {e.response.status_code}") from e
+            except httpx.RequestError as e:
+                if attempt < max_retries:
+                    time.sleep(2**attempt)
+                    continue
+                raise GitHubClientError(f"GitHub API request failed: {e}") from e
+
+        msg = f"GitHub API request failed after {max_retries + 1} attempts"
+        raise GitHubClientError(msg)
+
+    def _update_rate_limit(self, response: httpx.Response) -> None:
+        """Update rate limit state from response headers."""
+        if "x-ratelimit-remaining" in response.headers:
+            with contextlib.suppress(ValueError):
+                self._rate_remaining = int(response.headers["x-ratelimit-remaining"])
+        if "x-ratelimit-limit" in response.headers:
+            with contextlib.suppress(ValueError):
+                self._rate_limit = int(response.headers["x-ratelimit-limit"])
+        if "x-ratelimit-reset" in response.headers:
+            with contextlib.suppress(ValueError):
+                self._rate_reset = int(response.headers["x-ratelimit-reset"])
 
     def _fetch_username(self) -> str:
         """Fetch the authenticated user's username."""
