@@ -16,6 +16,25 @@ class NotificationType(Enum):
     CI_STATUS = "ci_status"
 
 
+class ReviewStatus(Enum):
+    """Review decision status for a PR."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    CHANGES_REQUESTED = "changes_requested"
+    REVIEW_REQUIRED = "review_required"
+    DISMISSED = "dismissed"
+
+
+class ChecksStatus(Enum):
+    """Combined CI/checks status for a PR."""
+
+    PENDING = "pending"
+    PASSING = "passing"
+    FAILING = "failing"
+    NONE = "none"
+
+
 @dataclass(frozen=True)
 class PullRequest:
     """Represents a GitHub pull request."""
@@ -28,6 +47,8 @@ class PullRequest:
     html_url: str
     updated_at: datetime
     draft: bool = False
+    review_status: ReviewStatus = ReviewStatus.PENDING
+    checks_status: ChecksStatus = ChecksStatus.NONE
 
     @property
     def display_name(self) -> str:

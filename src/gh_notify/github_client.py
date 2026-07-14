@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from gh_notify.models import NotificationEvent, NotificationType, PullRequest
+from gh_notify.models import ChecksStatus, NotificationEvent, NotificationType, PullRequest, ReviewStatus
 
 logger = logging.getLogger(__name__)
 
@@ -151,20 +151,114 @@ class GitHubClient:
     def fetch_review_requested_prs(self, username: str) -> list[PullRequest]:
         """Fetch open PRs where review is pending from the user.
 
-        Uses review-requested (pending review) and excludes PRs the user
-        has already reviewed (reviewed-by removes you from the pending list
-        in GitHub's search index).
+        Uses GraphQL to get review decision and check status in one query.
         """
         query = f"is:pr is:open review-requested:{username} -reviewed-by:{username}"
-        return self._search_all_prs(query)
+        return self._graphql_search_prs(query)
 
     def fetch_authored_prs(self, username: str) -> list[PullRequest]:
-        """Fetch all open PRs authored by the user."""
+        """Fetch all open PRs authored by the user with review/check status."""
         query = f"is:pr is:open author:{username}"
-        return self._search_all_prs(query)
+        return self._graphql_search_prs(query)
+
+    def _graphql_search_prs(self, search_query: str) -> list[PullRequest]:
+        """Fetch PRs via GraphQL search, including reviewDecision and statusCheckRollup."""
+        results: list[PullRequest] = []
+        cursor: str | None = None
+
+        while True:
+            after_clause = f', after: "{cursor}"' if cursor else ""
+            gql = f"""
+            {{
+              search(query: "{search_query}", type: ISSUE, first: 100{after_clause}) {{
+                pageInfo {{
+                  hasNextPage
+                  endCursor
+                }}
+                nodes {{
+                  ... on PullRequest {{
+                    number
+                    title
+                    url
+                    isDraft
+                    updatedAt
+                    author {{
+                      login
+                    }}
+                    repository {{
+                      nameWithOwner
+                    }}
+                    reviewDecision
+                    commits(last: 1) {{
+                      nodes {{
+                        commit {{
+                          statusCheckRollup {{
+                            state
+                          }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            """
+
+            response = self._request("POST", "/graphql", json={"query": gql})
+            data = response.json()
+
+            # Handle GraphQL errors
+            if "errors" in data:
+                error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
+                raise GitHubClientError(f"GraphQL error: {error_msg}")
+
+            search_data = data.get("data", {}).get("search", {})
+            nodes = search_data.get("nodes", [])
+
+            for node in nodes:
+                if not node:  # null nodes from non-PR results
+                    continue
+                results.append(self._parse_graphql_pr(node))
+
+            page_info = search_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage", False):
+                break
+            cursor = page_info.get("endCursor")
+
+        return results
+
+    def _parse_graphql_pr(self, node: dict[str, Any]) -> PullRequest:
+        """Parse a GraphQL PR node into a PullRequest."""
+        # Map reviewDecision
+        review_decision = node.get("reviewDecision") or ""
+        review_status = _map_review_decision(review_decision)
+
+        # Map statusCheckRollup
+        commits = node.get("commits", {}).get("nodes", [])
+        checks_status = ChecksStatus.NONE
+        if commits:
+            rollup = commits[0].get("commit", {}).get("statusCheckRollup")
+            if rollup:
+                checks_status = _map_checks_state(rollup.get("state", ""))
+
+        repo = node.get("repository", {}).get("nameWithOwner", "")
+        number = node.get("number", 0)
+
+        return PullRequest(
+            number=number,
+            title=node.get("title", ""),
+            repo_full_name=repo,
+            author=node.get("author", {}).get("login", "") if node.get("author") else "",
+            url=node.get("url", ""),
+            html_url=node.get("url", ""),  # GraphQL url field is the HTML URL
+            updated_at=_parse_datetime(node.get("updatedAt", "")),
+            draft=node.get("isDraft", False),
+            review_status=review_status,
+            checks_status=checks_status,
+        )
 
     def _search_all_prs(self, query: str) -> list[PullRequest]:
-        """Fetch all pages of search results for a PR query."""
+        """Fetch all pages of search results for a PR query (REST fallback)."""
         results: list[PullRequest] = []
         page = 1
         per_page = 100  # GitHub search API max
@@ -278,3 +372,31 @@ def _parse_datetime(dt_str: str) -> datetime:
         return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
     except ValueError:
         return datetime.now(tz=UTC)
+
+
+def _map_review_decision(decision: str) -> ReviewStatus:
+    """Map GraphQL reviewDecision to ReviewStatus enum."""
+    match decision:
+        case "APPROVED":
+            return ReviewStatus.APPROVED
+        case "CHANGES_REQUESTED":
+            return ReviewStatus.CHANGES_REQUESTED
+        case "REVIEW_REQUIRED":
+            return ReviewStatus.REVIEW_REQUIRED
+        case "DISMISSED":
+            return ReviewStatus.DISMISSED
+        case _:
+            return ReviewStatus.PENDING
+
+
+def _map_checks_state(state: str) -> ChecksStatus:
+    """Map GraphQL StatusCheckRollup state to ChecksStatus enum."""
+    match state:
+        case "SUCCESS":
+            return ChecksStatus.PASSING
+        case "FAILURE" | "ERROR":
+            return ChecksStatus.FAILING
+        case "PENDING" | "EXPECTED":
+            return ChecksStatus.PENDING
+        case _:
+            return ChecksStatus.NONE

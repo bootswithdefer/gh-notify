@@ -20,8 +20,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gh_notify.models import PullRequest
+from gh_notify.models import ChecksStatus, PullRequest, ReviewStatus
 from gh_notify.pr_store import PrCategory, PrStore
+
+# Sort role for custom sort data (timestamps as ints, enums as ints)
+SORT_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class MainWindow(QMainWindow):
@@ -31,7 +34,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._store = store
         self.setWindowTitle("gh-notify — Pull Requests")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1000, 600)
 
         self._setup_ui()
         self._connect_signals()
@@ -66,10 +69,11 @@ class MainWindow(QMainWindow):
     def _create_pr_tree(self) -> QTreeWidget:
         """Create a QTreeWidget configured for PR display."""
         tree = QTreeWidget()
-        tree.setHeaderLabels(["", "Title", "Repository", "Author", "Updated"])
+        tree.setHeaderLabels(["", "Title", "Repository", "Author", "Review", "Checks", "Updated"])
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        tree.setSortingEnabled(True)
 
         # Column widths
         header = tree.header()
@@ -77,11 +81,18 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # Title
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)  # Repo
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)  # Author
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)  # Updated
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)  # Review
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)  # Checks
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)  # Updated
         tree.setColumnWidth(0, 30)
-        tree.setColumnWidth(2, 200)
-        tree.setColumnWidth(3, 130)
-        tree.setColumnWidth(4, 120)
+        tree.setColumnWidth(2, 180)
+        tree.setColumnWidth(3, 120)
+        tree.setColumnWidth(4, 100)
+        tree.setColumnWidth(5, 80)
+        tree.setColumnWidth(6, 100)
+
+        # Default sort by updated descending (most recent first)
+        tree.sortByColumn(6, Qt.SortOrder.DescendingOrder)
 
         # Double-click opens in browser
         tree.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -136,7 +147,7 @@ class MainWindow(QMainWindow):
 
     def _add_pr_item(self, tree: QTreeWidget, pr: PullRequest) -> None:
         """Add a PR as a row in the tree widget."""
-        item = QTreeWidgetItem()
+        item = _SortableTreeWidgetItem()
         self._update_item_data(item, pr)
         tree.addTopLevelItem(item)
 
@@ -147,10 +158,12 @@ class MainWindow(QMainWindow):
             item.setText(0, "◌")
             item.setToolTip(0, "Draft")
             item.setForeground(0, QColor("#8b949e"))
+            item.setData(0, SORT_ROLE, 1)
         else:
             item.setText(0, "●")
             item.setToolTip(0, "Open")
             item.setForeground(0, QColor("#3fb950"))
+            item.setData(0, SORT_ROLE, 0)
 
         # Column 1: title with PR number
         item.setText(1, f"#{pr.number} {pr.title}")
@@ -166,9 +179,24 @@ class MainWindow(QMainWindow):
         item.setText(3, pr.author or "—")
         item.setForeground(3, QColor("#8b949e"))
 
-        # Column 4: relative time
-        item.setText(4, _relative_time(pr.updated_at))
-        item.setForeground(4, QColor("#8b949e"))
+        # Column 4: review status
+        review_text, review_color, review_sort = _review_display(pr.review_status)
+        item.setText(4, review_text)
+        item.setForeground(4, QColor(review_color))
+        item.setToolTip(4, pr.review_status.value.replace("_", " ").title())
+        item.setData(4, SORT_ROLE, review_sort)
+
+        # Column 5: checks status
+        checks_text, checks_color, checks_sort = _checks_display(pr.checks_status)
+        item.setText(5, checks_text)
+        item.setForeground(5, QColor(checks_color))
+        item.setToolTip(5, pr.checks_status.value.replace("_", " ").title())
+        item.setData(5, SORT_ROLE, checks_sort)
+
+        # Column 6: relative time (with raw timestamp for sorting)
+        item.setText(6, _relative_time(pr.updated_at))
+        item.setForeground(6, QColor("#8b949e"))
+        item.setData(6, SORT_ROLE, int(pr.updated_at.timestamp()))
 
         # Store PR data for later retrieval
         item.setData(0, Qt.ItemDataRole.UserRole, pr)
@@ -220,12 +248,52 @@ class MainWindow(QMainWindow):
                     continue
                 pr = item.data(0, Qt.ItemDataRole.UserRole)
                 if pr:
-                    item.setText(4, _relative_time(pr.updated_at))
+                    item.setText(6, _relative_time(pr.updated_at))
 
     def closeEvent(self, event) -> None:  # noqa: N802
         """Hide window instead of closing (tray app behavior)."""
         event.ignore()
         self.hide()
+
+
+class _SortableTreeWidgetItem(QTreeWidgetItem):
+    """TreeWidgetItem that sorts using SORT_ROLE data when available."""
+
+    def __lt__(self, other: QTreeWidgetItem) -> bool:
+        column = self.treeWidget().sortColumn() if self.treeWidget() else 0
+        my_data = self.data(column, SORT_ROLE)
+        other_data = other.data(column, SORT_ROLE)
+        if my_data is not None and other_data is not None:
+            return my_data < other_data
+        return super().__lt__(other)
+
+
+def _review_display(status: ReviewStatus) -> tuple[str, str, int]:
+    """Get display text, color, and sort value for review status."""
+    match status:
+        case ReviewStatus.APPROVED:
+            return ("✓ Approved", "#3fb950", 0)
+        case ReviewStatus.CHANGES_REQUESTED:
+            return ("✗ Changes", "#f85149", 3)
+        case ReviewStatus.REVIEW_REQUIRED:
+            return ("⊘ Required", "#d29922", 2)
+        case ReviewStatus.DISMISSED:
+            return ("— Dismissed", "#8b949e", 1)
+        case ReviewStatus.PENDING:
+            return ("◌ Pending", "#8b949e", 1)
+
+
+def _checks_display(status: ChecksStatus) -> tuple[str, str, int]:
+    """Get display text, color, and sort value for checks status."""
+    match status:
+        case ChecksStatus.PASSING:
+            return ("✓ Pass", "#3fb950", 0)
+        case ChecksStatus.FAILING:
+            return ("✗ Fail", "#f85149", 2)
+        case ChecksStatus.PENDING:
+            return ("◌ Running", "#d29922", 1)
+        case ChecksStatus.NONE:
+            return ("—", "#8b949e", 3)
 
 
 def _relative_time(dt: datetime) -> str:

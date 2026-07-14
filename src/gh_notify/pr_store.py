@@ -115,4 +115,10 @@ def _pr_key(pr: PullRequest) -> tuple[str, int]:
 
 def _pr_changed(old: PullRequest, new: PullRequest) -> bool:
     """Check if any visible PR field changed."""
-    return old.title != new.title or old.updated_at != new.updated_at or old.draft != new.draft
+    return (
+        old.title != new.title
+        or old.updated_at != new.updated_at
+        or old.draft != new.draft
+        or old.review_status != new.review_status
+        or old.checks_status != new.checks_status
+    )
