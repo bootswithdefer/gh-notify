@@ -100,48 +100,80 @@ class GitHubClient:
         return response.json()["login"]
 
     def fetch_notifications(self) -> list[dict[str, Any]]:
-        """Fetch notification threads, respecting If-Modified-Since.
+        """Fetch all notification threads, respecting If-Modified-Since.
 
         Returns empty list if nothing changed (304).
+        Paginates through all pages automatically.
         """
         headers: dict[str, str] = {}
         if self._last_modified:
             headers["If-Modified-Since"] = self._last_modified
 
         client = self._get_client()
-        try:
-            response = client.get("/notifications", headers=headers, params={"all": "false"})
-        except httpx.RequestError as e:
-            raise GitHubClientError(f"GitHub API request failed: {e}") from e
+        all_notifications: list[dict[str, Any]] = []
+        page = 1
+        per_page = 50
 
-        # Update poll interval from server recommendation
-        if "X-Poll-Interval" in response.headers:
-            with contextlib.suppress(ValueError):
-                self._poll_interval = int(response.headers["X-Poll-Interval"])
+        while True:
+            try:
+                response = client.get("/notifications", headers=headers, params={"all": "false", "per_page": per_page, "page": page})
+            except httpx.RequestError as e:
+                raise GitHubClientError(f"GitHub API request failed: {e}") from e
 
-        if response.status_code == 304:
-            return []
+            # Update poll interval from server recommendation (from first response)
+            if page == 1 and "X-Poll-Interval" in response.headers:
+                with contextlib.suppress(ValueError):
+                    self._poll_interval = int(response.headers["X-Poll-Interval"])
 
-        response.raise_for_status()
+            if response.status_code == 304:
+                return []
 
-        if "Last-Modified" in response.headers:
-            self._last_modified = response.headers["Last-Modified"]
+            response.raise_for_status()
 
-        return response.json()
+            if page == 1 and "Last-Modified" in response.headers:
+                self._last_modified = response.headers["Last-Modified"]
+
+            items = response.json()
+            if not items:
+                break
+
+            all_notifications.extend(items)
+
+            # Stop if we got fewer items than requested (last page)
+            if len(items) < per_page:
+                break
+            page += 1
+
+        return all_notifications
 
     def fetch_review_requested_prs(self, username: str) -> list[PullRequest]:
-        """Fetch open PRs where review is requested from the user."""
+        """Fetch all open PRs where review is requested from the user."""
         query = f"is:pr is:open review-requested:{username}"
-        response = self._request("GET", "/search/issues", params={"q": query, "per_page": 50})
-        data = response.json()
-        return [self._parse_search_result(item) for item in data.get("items", [])]
+        return self._search_all_prs(query)
 
     def fetch_authored_prs(self, username: str) -> list[PullRequest]:
-        """Fetch open PRs authored by the user."""
+        """Fetch all open PRs authored by the user."""
         query = f"is:pr is:open author:{username}"
-        response = self._request("GET", "/search/issues", params={"q": query, "per_page": 50})
-        data = response.json()
-        return [self._parse_search_result(item) for item in data.get("items", [])]
+        return self._search_all_prs(query)
+
+    def _search_all_prs(self, query: str) -> list[PullRequest]:
+        """Fetch all pages of search results for a PR query."""
+        results: list[PullRequest] = []
+        page = 1
+        per_page = 100  # GitHub search API max
+
+        while True:
+            response = self._request("GET", "/search/issues", params={"q": query, "per_page": per_page, "page": page})
+            data = response.json()
+            items = data.get("items", [])
+            results.extend(self._parse_search_result(item) for item in items)
+
+            # Stop if we got fewer items than requested (last page) or hit 1000 result cap
+            if len(items) < per_page or len(results) >= data.get("total_count", 0):
+                break
+            page += 1
+
+        return results
 
     def _parse_search_result(self, item: dict[str, Any]) -> PullRequest:
         """Parse a search result item into a PullRequest."""
