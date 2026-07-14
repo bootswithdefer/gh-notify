@@ -6,6 +6,7 @@ import asyncio
 import logging
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,14 +21,25 @@ ICON_PATH = Path(__file__).parent / "icons" / "gh-notify.svg"
 
 
 class Notifier:
-    """Sends desktop notifications for GitHub PR events."""
+    """Sends desktop notifications for GitHub PR events.
+
+    Notifications are sent asynchronously on a dedicated background thread
+    so they never block the Qt event loop.
+    """
 
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
         self._notifier = DesktopNotifier(
             app_name="gh-notify",
             app_icon=self._get_icon(),
         )
+
+    def _run_loop(self) -> None:
+        """Run the asyncio event loop in a background thread."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
 
     def _get_icon(self) -> Icon | None:
         """Get the Icon object for the app icon."""
@@ -35,21 +47,26 @@ class Notifier:
             return Icon(path=ICON_PATH)
         return None
 
-    def send_sync(self, event: NotificationEvent) -> None:
+    def send_async(self, event: NotificationEvent) -> None:
+        """Schedule a notification to be sent (non-blocking, fire-and-forget)."""
+        asyncio.run_coroutine_threadsafe(self._send(event), self._loop)
+
+    async def _send(self, event: NotificationEvent) -> None:
         """Send a desktop notification for an event."""
         try:
-            self._loop.run_until_complete(self._send(event))
+            await self._notifier.send(
+                title=event.summary,
+                message=event.title,
+                urgency=Urgency.Normal,
+                on_clicked=lambda: _open_url(event.pr.html_url),
+            )
         except Exception:
             logger.exception("Failed to send notification")
 
-    async def _send(self, event: NotificationEvent) -> None:
-        """Send a desktop notification for an event (async)."""
-        await self._notifier.send(
-            title=event.summary,
-            message=event.title,
-            urgency=Urgency.Normal,
-            on_clicked=lambda: _open_url(event.pr.html_url),
-        )
+    def shutdown(self) -> None:
+        """Stop the background event loop."""
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=2)
 
 
 def _open_url(url: str) -> None:

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QSize, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from gh_notify.config import Config
@@ -16,14 +17,13 @@ from gh_notify.models import NotificationEvent, PullRequest
 from gh_notify.notifier import Notifier
 from gh_notify.poller import Poller
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
 
 ICON_PATH = Path(__file__).parent / "icons" / "gh-notify.svg"
 ICON_ATTENTION_PATH = Path(__file__).parent / "icons" / "gh-notify-attention.svg"
 ICON_POLL_PATHS = [Path(__file__).parent / "icons" / f"gh-notify-poll-{i}.svg" for i in range(4)]
+
+SINGLE_INSTANCE_KEY = "gh-notify-single-instance"
 
 
 class GhNotifyApp:
@@ -32,7 +32,19 @@ class GhNotifyApp:
     def __init__(self) -> None:
         self._app = QApplication(sys.argv)
         self._app.setApplicationName("gh-notify")
+        self._app.setApplicationDisplayName("GitHub PR Monitor")
+        self._app.setOrganizationName("gh-notify")
+        self._app.setDesktopFileName("gh-notify")
         self._app.setQuitOnLastWindowClosed(False)
+
+        # Single instance enforcement
+        if not self._acquire_lock():
+            logger.error("gh-notify is already running")
+            sys.exit(0)
+
+        # Set app-wide window icon
+        app_icon = self._load_icon(ICON_PATH)
+        self._app.setWindowIcon(app_icon)
 
         self._config = Config.load()
         self._notifier = Notifier()
@@ -51,11 +63,31 @@ class GhNotifyApp:
         self._setup_tray()
         self._connect_signals()
 
+        # Cleanup on quit
+        self._app.aboutToQuit.connect(self._cleanup)
+
+    def _acquire_lock(self) -> bool:
+        """Try to acquire a single-instance lock via QLocalServer."""
+        # Try connecting to an existing instance
+        socket = QLocalSocket()
+        socket.connectToServer(SINGLE_INSTANCE_KEY)
+        if socket.waitForConnected(500):
+            # Another instance is running
+            socket.close()
+            return False
+        socket.close()
+
+        # Create the server lock
+        self._lock_server = QLocalServer()
+        # Remove stale socket file if previous crash left one
+        QLocalServer.removeServer(SINGLE_INSTANCE_KEY)
+        return self._lock_server.listen(SINGLE_INSTANCE_KEY)
+
     def _setup_tray(self) -> None:
         """Set up the system tray icon and context menu."""
-        self._tray = QSystemTrayIcon()
+        self._tray = QSystemTrayIcon(self._app)
 
-        # Load icon
+        # Load icons
         self._icon_normal = self._load_icon(ICON_PATH)
         self._icon_attention = self._load_icon(ICON_ATTENTION_PATH)
         self._poll_icons = [self._load_icon(p) for p in ICON_POLL_PATHS]
@@ -108,7 +140,7 @@ class GhNotifyApp:
     def _on_new_events(self, events: list[NotificationEvent]) -> None:
         """Handle new notification events."""
         for event in events:
-            self._notifier.send_sync(event)
+            self._notifier.send_async(event)
 
         # Show attention icon when there are review requests
         if any(e.notification_type.value == "review_requested" for e in events):
@@ -229,9 +261,16 @@ class GhNotifyApp:
 
     def _quit(self) -> None:
         """Quit the application."""
-        self._poller.stop()
-        self._tray.hide()
         self._app.quit()
+
+    def _cleanup(self) -> None:
+        """Clean up resources on application exit."""
+        self._poll_timer.stop()
+        self._poller.stop()
+        self._notifier.shutdown()
+        self._tray.hide()
+        if hasattr(self, "_lock_server"):
+            self._lock_server.close()
 
     def run(self) -> int:
         """Start the application."""
@@ -248,7 +287,6 @@ def _truncate(text: str, max_len: int) -> str:
 
 def _make_open_handler(url: str):
     """Create a click handler that opens a URL."""
-    import subprocess
 
     def handler():
         subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603

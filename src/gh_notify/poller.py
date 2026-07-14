@@ -80,7 +80,7 @@ class _PollWorker(QObject):
             self.polling_finished.emit()
 
     def update_config(self, config: Config) -> None:
-        """Update configuration."""
+        """Update configuration (thread-safe: only called when worker is idle between polls)."""
         self._config = config
 
     @pyqtSlot()
@@ -190,7 +190,12 @@ class Poller(QObject):
             self._thread.terminate()
 
     def update_config(self, config: Config) -> None:
-        """Update configuration and restart timer with new interval."""
+        """Update configuration and restart timer with new interval.
+
+        Note: _worker.update_config() does a simple reference assignment which is
+        atomic under the GIL. The worker reads _config at the start of each poll
+        cycle, so there's no mid-poll mutation risk.
+        """
         self._config = config
         self._worker.update_config(config)
         if self._timer.isActive():
