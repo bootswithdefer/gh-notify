@@ -262,7 +262,21 @@ class GitHubClient:
         return self._graphql_search_prs(query)
 
     def _graphql_search_prs(self, search_query: str) -> list[PullRequest]:
-        """Fetch PRs via GraphQL search, including reviewDecision and statusCheckRollup."""
+        """Fetch PRs via GraphQL search, including reviewDecision and statusCheckRollup.
+
+        Uses a page size of 25 to stay within GitHub's resource budget.
+        Falls back to a lightweight query (no checks) if resource limits are hit.
+        """
+        try:
+            return self._graphql_search_prs_full(search_query)
+        except GitHubClientError as e:
+            if "resource limit" in str(e).lower():
+                logger.warning("GraphQL resource limit hit, falling back to lightweight query")
+                return self._graphql_search_prs_lightweight(search_query)
+            raise
+
+    def _graphql_search_prs_full(self, search_query: str) -> list[PullRequest]:
+        """Full GraphQL search with review decision and checks status."""
         results: list[PullRequest] = []
         cursor: str | None = None
 
@@ -270,7 +284,7 @@ class GitHubClient:
             after_clause = f', after: "{cursor}"' if cursor else ""
             gql = f"""
             {{
-              search(query: "{search_query}", type: ISSUE, first: 100{after_clause}) {{
+              search(query: "{search_query}", type: ISSUE, first: 25{after_clause}) {{
                 pageInfo {{
                   hasNextPage
                   endCursor
@@ -307,7 +321,6 @@ class GitHubClient:
             response = self._request("POST", "/graphql", json={"query": gql})
             data = response.json()
 
-            # Handle GraphQL errors
             if "errors" in data:
                 error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
                 raise GitHubClientError(f"GraphQL error: {error_msg}")
@@ -316,7 +329,7 @@ class GitHubClient:
             nodes = search_data.get("nodes", [])
 
             for node in nodes:
-                if not node:  # null nodes from non-PR results
+                if not node:
                     continue
                 results.append(self._parse_graphql_pr(node))
 
@@ -326,6 +339,82 @@ class GitHubClient:
             cursor = page_info.get("endCursor")
 
         return results
+
+    def _graphql_search_prs_lightweight(self, search_query: str) -> list[PullRequest]:
+        """Lightweight GraphQL search without checks (for when resource limits are hit)."""
+        results: list[PullRequest] = []
+        cursor: str | None = None
+
+        while True:
+            after_clause = f', after: "{cursor}"' if cursor else ""
+            gql = f"""
+            {{
+              search(query: "{search_query}", type: ISSUE, first: 50{after_clause}) {{
+                pageInfo {{
+                  hasNextPage
+                  endCursor
+                }}
+                nodes {{
+                  ... on PullRequest {{
+                    number
+                    title
+                    url
+                    isDraft
+                    updatedAt
+                    author {{
+                      login
+                    }}
+                    repository {{
+                      nameWithOwner
+                    }}
+                    reviewDecision
+                  }}
+                }}
+              }}
+            }}
+            """
+
+            response = self._request("POST", "/graphql", json={"query": gql})
+            data = response.json()
+
+            if "errors" in data:
+                error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
+                raise GitHubClientError(f"GraphQL error: {error_msg}")
+
+            search_data = data.get("data", {}).get("search", {})
+            nodes = search_data.get("nodes", [])
+
+            for node in nodes:
+                if not node:
+                    continue
+                results.append(self._parse_graphql_pr_lightweight(node))
+
+            page_info = search_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage", False):
+                break
+            cursor = page_info.get("endCursor")
+
+        return results
+
+    def _parse_graphql_pr_lightweight(self, node: dict[str, Any]) -> PullRequest:
+        """Parse a GraphQL PR node without checks status."""
+        review_decision = node.get("reviewDecision") or ""
+        review_status = _map_review_decision(review_decision)
+        repo = node.get("repository", {}).get("nameWithOwner", "")
+        number = node.get("number", 0)
+
+        return PullRequest(
+            number=number,
+            title=node.get("title", ""),
+            repo_full_name=repo,
+            author=node.get("author", {}).get("login", "") if node.get("author") else "",
+            url=node.get("url", ""),
+            html_url=node.get("url", ""),
+            updated_at=_parse_datetime(node.get("updatedAt", "")),
+            draft=node.get("isDraft", False),
+            review_status=review_status,
+            checks_status=ChecksStatus.NONE,
+        )
 
     def _parse_graphql_pr(self, node: dict[str, Any]) -> PullRequest:
         """Parse a GraphQL PR node into a PullRequest."""
