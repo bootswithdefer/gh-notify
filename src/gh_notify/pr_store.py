@@ -74,6 +74,31 @@ class PrStore(QObject):
         """Update the authored PR set, emitting granular change signals."""
         self._update_category(self._authored_prs, new_prs, PrCategory.AUTHORED)
 
+    def update_review_prs_incremental(self, page_prs: list[PullRequest]) -> None:
+        """Add/update PRs from an incremental page (no removals — those happen in the final update)."""
+        self._update_category_incremental(self._review_prs, page_prs, PrCategory.REVIEW_REQUESTED)
+
+    def update_authored_prs_incremental(self, page_prs: list[PullRequest]) -> None:
+        """Add/update PRs from an incremental page (no removals — those happen in the final update)."""
+        self._update_category_incremental(self._authored_prs, page_prs, PrCategory.AUTHORED)
+
+    def _update_category_incremental(
+        self,
+        current: dict[tuple[str, int], PullRequest],
+        page_prs: list[PullRequest],
+        category: PrCategory,
+    ) -> None:
+        """Process an incremental page — add new PRs and update changed ones (no removals)."""
+        for pr in page_prs:
+            key = _pr_key(pr)
+            if key in current:
+                if _pr_changed(current[key], pr):
+                    current[key] = pr
+                    self.pr_updated.emit(pr, category)
+            else:
+                current[key] = pr
+                self.pr_added.emit(pr, category)
+
     def _update_category(
         self,
         current: dict[tuple[str, int], PullRequest],

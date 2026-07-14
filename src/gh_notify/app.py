@@ -144,6 +144,8 @@ class GhNotifyApp:
         self._poller.new_events.connect(self._on_new_events)
         self._poller.review_prs_updated.connect(self._on_review_prs_updated)
         self._poller.authored_prs_updated.connect(self._on_authored_prs_updated)
+        self._poller.review_prs_page.connect(self._on_review_prs_page)
+        self._poller.authored_prs_page.connect(self._on_authored_prs_page)
         self._poller.error_occurred.connect(self._on_error)
         self._poller.polling_started.connect(self._on_polling_started)
         self._poller.polling_finished.connect(self._on_polling_finished)
@@ -159,7 +161,7 @@ class GhNotifyApp:
             self._tray.setIcon(self._icon_attention)
 
     def _on_review_prs_updated(self, prs: list[PullRequest]) -> None:
-        """Update the review PRs via the store (triggers incremental UI updates)."""
+        """Final update — the full list is now complete, reconcile removals."""
         self._review_prs = prs
         self._store.update_review_prs(prs)
         self._rebuild_menu()
@@ -173,10 +175,18 @@ class GhNotifyApp:
             self._tray.setToolTip("gh-notify — GitHub PR Monitor")
 
     def _on_authored_prs_updated(self, prs: list[PullRequest]) -> None:
-        """Update the authored PRs via the store (triggers incremental UI updates)."""
+        """Final update — the full list is now complete, reconcile removals."""
         self._authored_prs = prs
         self._store.update_authored_prs(prs)
         self._rebuild_menu()
+
+    def _on_review_prs_page(self, prs: list[PullRequest]) -> None:
+        """Incremental page of review PRs arrived — add/update in store immediately."""
+        self._store.update_review_prs_incremental(prs)
+
+    def _on_authored_prs_page(self, prs: list[PullRequest]) -> None:
+        """Incremental page of authored PRs arrived — add/update in store immediately."""
+        self._store.update_authored_prs_incremental(prs)
 
     def _on_error(self, message: str) -> None:
         """Handle polling errors."""

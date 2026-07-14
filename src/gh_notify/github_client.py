@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -248,34 +249,34 @@ class GitHubClient:
 
         return all_notifications
 
-    def fetch_review_requested_prs(self, username: str) -> list[PullRequest]:
+    def fetch_review_requested_prs(self, username: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Fetch open PRs where review is pending from the user.
 
         Uses GraphQL to get review decision and check status in one query.
         """
         query = f"is:pr is:open review-requested:{username} -reviewed-by:{username}"
-        return self._graphql_search_prs(query)
+        return self._graphql_search_prs(query, page_callback=page_callback)
 
-    def fetch_authored_prs(self, username: str) -> list[PullRequest]:
+    def fetch_authored_prs(self, username: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Fetch all open PRs authored by the user with review/check status."""
         query = f"is:pr is:open author:{username}"
-        return self._graphql_search_prs(query)
+        return self._graphql_search_prs(query, page_callback=page_callback)
 
-    def _graphql_search_prs(self, search_query: str) -> list[PullRequest]:
+    def _graphql_search_prs(self, search_query: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Fetch PRs via GraphQL search, including reviewDecision and statusCheckRollup.
 
         Uses a page size of 25 to stay within GitHub's resource budget.
         Falls back to a lightweight query (no checks) if resource limits are hit.
         """
         try:
-            return self._graphql_search_prs_full(search_query)
+            return self._graphql_search_prs_full(search_query, page_callback=page_callback)
         except GitHubClientError as e:
             if "resource limit" in str(e).lower():
                 logger.warning("GraphQL resource limit hit, falling back to lightweight query")
-                return self._graphql_search_prs_lightweight(search_query)
+                return self._graphql_search_prs_lightweight(search_query, page_callback=page_callback)
             raise
 
-    def _graphql_search_prs_full(self, search_query: str) -> list[PullRequest]:
+    def _graphql_search_prs_full(self, search_query: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Full GraphQL search with review decision and checks status."""
         results: list[PullRequest] = []
         cursor: str | None = None
@@ -328,10 +329,15 @@ class GitHubClient:
             search_data = data.get("data", {}).get("search", {})
             nodes = search_data.get("nodes", [])
 
+            page_results: list[PullRequest] = []
             for node in nodes:
                 if not node:
                     continue
-                results.append(self._parse_graphql_pr(node))
+                page_results.append(self._parse_graphql_pr(node))
+
+            results.extend(page_results)
+            if page_callback and page_results:
+                page_callback(page_results)
 
             page_info = search_data.get("pageInfo", {})
             if not page_info.get("hasNextPage", False):
@@ -340,7 +346,7 @@ class GitHubClient:
 
         return results
 
-    def _graphql_search_prs_lightweight(self, search_query: str) -> list[PullRequest]:
+    def _graphql_search_prs_lightweight(self, search_query: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Lightweight GraphQL search without checks (for when resource limits are hit)."""
         results: list[PullRequest] = []
         cursor: str | None = None
@@ -384,10 +390,15 @@ class GitHubClient:
             search_data = data.get("data", {}).get("search", {})
             nodes = search_data.get("nodes", [])
 
+            page_results: list[PullRequest] = []
             for node in nodes:
                 if not node:
                     continue
-                results.append(self._parse_graphql_pr_lightweight(node))
+                page_results.append(self._parse_graphql_pr_lightweight(node))
+
+            results.extend(page_results)
+            if page_callback and page_results:
+                page_callback(page_results)
 
             page_info = search_data.get("pageInfo", {})
             if not page_info.get("hasNextPage", False):

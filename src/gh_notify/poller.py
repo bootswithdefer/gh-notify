@@ -22,8 +22,10 @@ class _PollWorker(QObject):
 
     # Fully processed results emitted to main thread
     notifications_ready = pyqtSignal(list)  # list[NotificationEvent]
-    review_prs_ready = pyqtSignal(list)  # list[PullRequest]
-    authored_prs_ready = pyqtSignal(list)  # list[PullRequest]
+    review_prs_ready = pyqtSignal(list)  # list[PullRequest] — full final list
+    authored_prs_ready = pyqtSignal(list)  # list[PullRequest] — full final list
+    review_prs_page = pyqtSignal(list)  # list[PullRequest] — incremental page
+    authored_prs_page = pyqtSignal(list)  # list[PullRequest] — incremental page
     poll_interval_changed = pyqtSignal(int)  # new interval in ms
     error_occurred = pyqtSignal(str)
     polling_started = pyqtSignal()
@@ -60,15 +62,15 @@ class _PollWorker(QObject):
                     events.append(event)
             self.notifications_ready.emit(events)
 
-            # Fetch review-requested PRs
+            # Fetch review-requested PRs (incremental)
             self.progress.emit("Fetching review requests…")
-            prs = client.fetch_review_requested_prs(username)
+            prs = client.fetch_review_requested_prs(username, page_callback=self._on_review_page)
             prs = [pr for pr in prs if not self._is_pr_filtered(pr)]
             self.review_prs_ready.emit(prs)
 
-            # Fetch authored PRs
+            # Fetch authored PRs (incremental)
             self.progress.emit("Fetching your PRs…")
-            authored = client.fetch_authored_prs(username)
+            authored = client.fetch_authored_prs(username, page_callback=self._on_authored_page)
             authored = [pr for pr in authored if not self._is_pr_filtered(pr)]
             self.authored_prs_ready.emit(authored)
 
@@ -112,6 +114,20 @@ class _PollWorker(QObject):
     def update_config(self, config: Config) -> None:
         """Update configuration (thread-safe: only called when worker is idle between polls)."""
         self._config = config
+
+    def _on_review_page(self, page_prs: list[PullRequest]) -> None:
+        """Emit a page of review PRs incrementally."""
+        filtered = [pr for pr in page_prs if not self._is_pr_filtered(pr)]
+        if filtered:
+            self.review_prs_page.emit(filtered)
+            self.progress.emit(f"Fetching review requests… ({len(filtered)} found)")
+
+    def _on_authored_page(self, page_prs: list[PullRequest]) -> None:
+        """Emit a page of authored PRs incrementally."""
+        filtered = [pr for pr in page_prs if not self._is_pr_filtered(pr)]
+        if filtered:
+            self.authored_prs_page.emit(filtered)
+            self.progress.emit(f"Fetching your PRs… ({len(filtered)} found)")
 
     @pyqtSlot()
     def cleanup(self) -> None:
@@ -157,6 +173,9 @@ class Poller(QObject):
     review_prs_updated = pyqtSignal(list)  # list[PullRequest]
     # Emitted when authored PRs are updated
     authored_prs_updated = pyqtSignal(list)  # list[PullRequest]
+    # Emitted incrementally as pages arrive
+    review_prs_page = pyqtSignal(list)  # list[PullRequest]
+    authored_prs_page = pyqtSignal(list)  # list[PullRequest]
     # Emitted on error
     error_occurred = pyqtSignal(str)
     # Emitted when polling starts/finishes (for UI animation)
@@ -185,6 +204,8 @@ class Poller(QObject):
         self._worker.notifications_ready.connect(self._on_notifications_ready)
         self._worker.review_prs_ready.connect(self._on_review_prs_ready)
         self._worker.authored_prs_ready.connect(self._on_authored_prs_ready)
+        self._worker.review_prs_page.connect(self.review_prs_page)
+        self._worker.authored_prs_page.connect(self.authored_prs_page)
         self._worker.poll_interval_changed.connect(self._on_poll_interval_changed)
         self._worker.error_occurred.connect(self.error_occurred)
         self._worker.polling_started.connect(self.polling_started)
