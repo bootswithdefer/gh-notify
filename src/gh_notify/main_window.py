@@ -221,10 +221,11 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
-        """Open the PR in the browser on double-click."""
+        """Open the PR diff in the browser on double-click."""
         pr = item.data(0, Qt.ItemDataRole.UserRole)
         if pr and pr.html_url:
-            subprocess.Popen(["xdg-open", pr.html_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
+            diff_url = f"{pr.html_url}/files"
+            subprocess.Popen(["xdg-open", diff_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
 
     def _update_tab_labels(self) -> None:
         """Update tab labels with current counts."""
