@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 import sys
 
 
@@ -13,6 +14,10 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Allow Ctrl+C to work with Qt's event loop
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     from gh_notify.app import GhNotifyApp
 

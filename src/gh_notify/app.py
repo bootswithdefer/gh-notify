@@ -130,14 +130,14 @@ class GhNotifyApp:
         """Rebuild the context menu with current PR lists."""
         self._menu.clear()
 
+        max_visible = 5
+
         # Review section
         review_header = self._menu.addAction(f"— PRs Awaiting Review ({len(self._review_prs)}) —")
         review_header.setEnabled(False)
 
         if self._review_prs:
-            for pr in self._review_prs:
-                action = self._menu.addAction(f"  {pr.display_name}: {_truncate(pr.title, 50)}")
-                action.triggered.connect(_make_open_handler(pr.html_url))
+            self._add_pr_items(self._menu, self._review_prs, max_visible)
         else:
             none_action = self._menu.addAction("  (none)")
             none_action.setEnabled(False)
@@ -149,9 +149,7 @@ class GhNotifyApp:
         authored_header.setEnabled(False)
 
         if self._authored_prs:
-            for pr in self._authored_prs:
-                action = self._menu.addAction(f"  {pr.display_name}: {_truncate(pr.title, 50)}")
-                action.triggered.connect(_make_open_handler(pr.html_url))
+            self._add_pr_items(self._menu, self._authored_prs, max_visible)
         else:
             none_action = self._menu.addAction("  (none)")
             none_action.setEnabled(False)
@@ -166,6 +164,21 @@ class GhNotifyApp:
 
         quit_action = self._menu.addAction("Quit")
         quit_action.triggered.connect(self._quit)
+
+    def _add_pr_items(self, menu: QMenu, prs: list[PullRequest], max_visible: int) -> None:
+        """Add PR items to a menu, using a submenu for overflow."""
+        visible = prs[:max_visible]
+        overflow = prs[max_visible:]
+
+        for pr in visible:
+            action = menu.addAction(f"  {pr.display_name}: {_truncate(pr.title, 50)}")
+            action.triggered.connect(_make_open_handler(pr.html_url))
+
+        if overflow:
+            more_menu = menu.addMenu(f"  … {len(overflow)} more")
+            for pr in overflow:
+                action = more_menu.addAction(f"{pr.display_name}: {_truncate(pr.title, 50)}")
+                action.triggered.connect(_make_open_handler(pr.html_url))
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Handle tray icon activation (left click)."""
