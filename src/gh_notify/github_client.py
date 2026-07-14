@@ -278,6 +278,8 @@ class GitHubClient:
 
     def _graphql_search_prs_full(self, search_query: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Full GraphQL search with review decision and checks status."""
+        import time
+
         results: list[PullRequest] = []
         cursor: str | None = None
 
@@ -319,12 +321,24 @@ class GitHubClient:
             }}
             """
 
-            response = self._request("POST", "/graphql", json={"query": gql})
-            data = response.json()
+            # Retry transient GraphQL errors (server-side failures)
+            data = None
+            for attempt in range(3):
+                response = self._request("POST", "/graphql", json={"query": gql})
+                data = response.json()
 
-            if "errors" in data:
-                error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
-                raise GitHubClientError(f"GraphQL error: {error_msg}")
+                if "errors" in data:
+                    error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
+                    # Transient server errors — retry
+                    is_transient = "something went wrong" in error_msg.lower() or "internal" in error_msg.lower() or "timeout" in error_msg.lower()
+                    if is_transient and attempt < 2:
+                        logger.warning("GraphQL transient error, retrying in %ds (attempt %d/3): %s", 2**attempt, attempt + 1, error_msg[:80])
+                        time.sleep(2**attempt)
+                        continue
+                    # Resource limits — don't retry, raise immediately
+                    raise GitHubClientError(f"GraphQL error: {error_msg}")
+
+                break  # Success — no errors
 
             search_data = data.get("data", {}).get("search", {})
             nodes = search_data.get("nodes", [])
@@ -348,6 +362,8 @@ class GitHubClient:
 
     def _graphql_search_prs_lightweight(self, search_query: str, page_callback: Callable[[list[PullRequest]], None] | None = None) -> list[PullRequest]:
         """Lightweight GraphQL search without checks (for when resource limits are hit)."""
+        import time
+
         results: list[PullRequest] = []
         cursor: str | None = None
 
@@ -380,12 +396,22 @@ class GitHubClient:
             }}
             """
 
-            response = self._request("POST", "/graphql", json={"query": gql})
-            data = response.json()
+            # Retry transient GraphQL errors
+            data = None
+            for attempt in range(3):
+                response = self._request("POST", "/graphql", json={"query": gql})
+                data = response.json()
 
-            if "errors" in data:
-                error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
-                raise GitHubClientError(f"GraphQL error: {error_msg}")
+                if "errors" in data:
+                    error_msg = data["errors"][0].get("message", "Unknown GraphQL error")
+                    is_transient = "something went wrong" in error_msg.lower() or "internal" in error_msg.lower() or "timeout" in error_msg.lower()
+                    if is_transient and attempt < 2:
+                        logger.warning("GraphQL transient error (lightweight), retrying in %ds (attempt %d/3): %s", 2**attempt, attempt + 1, error_msg[:80])
+                        time.sleep(2**attempt)
+                        continue
+                    raise GitHubClientError(f"GraphQL error: {error_msg}")
+
+                break
 
             search_data = data.get("data", {}).get("search", {})
             nodes = search_data.get("nodes", [])
