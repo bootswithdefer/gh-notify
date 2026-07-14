@@ -87,13 +87,25 @@ class _PollWorker(QObject):
 
             reset_in = max(0, e.reset_at - int(time.time()))
             minutes = reset_in // 60
-            msg = f"Rate limited — resets in {minutes}m. Remaining: {e.remaining}"
+            seconds = reset_in % 60
+            msg = f"⚠ Rate limited — resets in {minutes}m {seconds}s"
             logger.warning(msg)
             self.progress.emit(msg)
             self.error_occurred.emit(msg)
         except GitHubClientError as e:
             logger.exception("Polling error")
-            self.error_occurred.emit(str(e))
+            # Provide a concise user-visible message
+            error_str = str(e)
+            if "unreachable" in error_str.lower():
+                user_msg = "⚠ GitHub unreachable — will retry next cycle"
+            elif "502" in error_str or "503" in error_str or "504" in error_str:
+                user_msg = "⚠ GitHub server error — will retry next cycle"
+            elif "401" in error_str:
+                user_msg = "⚠ Authentication failed — check `gh auth status`"
+            else:
+                user_msg = f"⚠ {error_str[:80]}"
+            self.progress.emit(user_msg)
+            self.error_occurred.emit(user_msg)
         finally:
             self.polling_finished.emit()
 

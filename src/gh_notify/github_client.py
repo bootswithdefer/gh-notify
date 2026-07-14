@@ -108,7 +108,8 @@ class GitHubClient:
         Handles:
         - Rate limit tracking (X-RateLimit-* headers)
         - Rate limit enforcement (raises RateLimitError before calling if exhausted)
-        - Retry with backoff on 502/503 (up to 2 retries)
+        - Retry with backoff on transient errors (500, 502, 503, 504, network errors)
+        - Secondary rate limit detection (403 with Retry-After or abuse message)
         - Token refresh on 401
         """
         import time
@@ -120,24 +121,45 @@ class GitHubClient:
                 raise RateLimitError(self._rate_reset, self._rate_remaining)
 
         client = self._get_client()
-        max_retries = 2
+        max_retries = 3
+        retryable_statuses = {500, 502, 503, 504}
+        last_error: Exception | None = None
 
         for attempt in range(max_retries + 1):
             try:
                 response = client.request(method, path, **kwargs)
                 self._update_rate_limit(response)
 
-                # Rate limited by server
+                # Primary rate limit (403 with remaining=0)
                 if response.status_code == 403 and self._rate_remaining is not None and self._rate_remaining == 0:
                     raise RateLimitError(self._rate_reset or 0, 0)
 
+                # Secondary rate limit (403 with Retry-After or abuse detection)
+                if response.status_code == 403:
+                    body = response.text.lower()
+                    if "retry-after" in response.headers:
+                        retry_after = int(response.headers.get("Retry-After", "60"))
+                        reset_at = int(time.time()) + retry_after
+                        raise RateLimitError(reset_at, 0)
+                    if "abuse" in body or "rate limit" in body or "secondary" in body:
+                        # Secondary rate limit without Retry-After — back off 60s
+                        raise RateLimitError(int(time.time()) + 60, 0)
+
                 # Retry on transient server errors
-                if response.status_code in (502, 503) and attempt < max_retries:
-                    time.sleep(2**attempt)  # 1s, 2s backoff
-                    continue
+                if response.status_code in retryable_statuses:
+                    if attempt < max_retries:
+                        sleep_time = 2**attempt  # 1s, 2s, 4s
+                        logger.warning(
+                            "GitHub API %d on %s %s, retrying in %ds (attempt %d/%d)", response.status_code, method, path, sleep_time, attempt + 1, max_retries
+                        )
+                        time.sleep(sleep_time)
+                        continue
+                    # Exhausted retries
+                    raise GitHubClientError(f"GitHub API error: {response.status_code} after {max_retries + 1} attempts on {method} {path}")
 
                 response.raise_for_status()
                 return response
+
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 401 and attempt == 0:
                     # Token might be stale, clear it and retry once
@@ -145,14 +167,19 @@ class GitHubClient:
                     self._client = None
                     client = self._get_client()
                     continue
-                raise GitHubClientError(f"GitHub API error: {e.response.status_code}") from e
+                raise GitHubClientError(f"GitHub API error: {e.response.status_code} on {method} {path}") from e
             except httpx.RequestError as e:
+                last_error = e
                 if attempt < max_retries:
-                    time.sleep(2**attempt)
+                    sleep_time = 2**attempt
+                    logger.warning(
+                        "GitHub API network error on %s %s: %s, retrying in %ds (attempt %d/%d)", method, path, e, sleep_time, attempt + 1, max_retries
+                    )
+                    time.sleep(sleep_time)
                     continue
-                raise GitHubClientError(f"GitHub API request failed: {e}") from e
+                raise GitHubClientError(f"GitHub API unreachable after {max_retries + 1} attempts: {e}") from e
 
-        msg = f"GitHub API request failed after {max_retries + 1} attempts"
+        msg = f"GitHub API request failed after {max_retries + 1} attempts: {last_error}"
         raise GitHubClientError(msg)
 
     def _update_rate_limit(self, response: httpx.Response) -> None:
