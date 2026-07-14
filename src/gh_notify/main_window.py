@@ -235,10 +235,18 @@ class MainWindow(QMainWindow):
         self._tabs.setTabText(1, f"Your Pull Requests ({authored_count})")
 
     def _update_status(self) -> None:
-        """Update the status bar text."""
+        """Update the status bar with idle summary text."""
         review_count = self._review_tree.topLevelItemCount()
         authored_count = self._authored_tree.topLevelItemCount()
         self._status_label.setText(f"{review_count} review requests · {authored_count} authored PRs")
+
+    def set_status(self, message: str) -> None:
+        """Set the status bar to a specific message (e.g., during polling)."""
+        self._status_label.setText(message)
+
+    def update_idle_status(self) -> None:
+        """Reset the status bar to the idle summary."""
+        self._update_status()
 
     def _refresh_timestamps(self) -> None:
         """Refresh all relative timestamp displays."""

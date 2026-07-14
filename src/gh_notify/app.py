@@ -147,6 +147,7 @@ class GhNotifyApp:
         self._poller.error_occurred.connect(self._on_error)
         self._poller.polling_started.connect(self._on_polling_started)
         self._poller.polling_finished.connect(self._on_polling_finished)
+        self._poller.progress.connect(self._on_progress)
 
     def _on_new_events(self, events: list[NotificationEvent]) -> None:
         """Handle new notification events."""
@@ -245,6 +246,7 @@ class GhNotifyApp:
         """Start the icon animation when polling begins."""
         self._poll_frame = 0
         self._poll_timer.start()
+        self._main_window.set_status("Updating…")
 
     def _on_polling_finished(self) -> None:
         """Stop the icon animation when polling completes."""
@@ -254,6 +256,11 @@ class GhNotifyApp:
             self._tray.setIcon(self._icon_attention)
         else:
             self._tray.setIcon(self._icon_normal)
+        self._main_window.update_idle_status()
+
+    def _on_progress(self, message: str) -> None:
+        """Forward progress messages to the main window status bar."""
+        self._main_window.set_status(message)
 
     def _animate_poll_icon(self) -> None:
         """Advance to the next animation frame."""

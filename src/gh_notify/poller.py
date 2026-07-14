@@ -28,6 +28,7 @@ class _PollWorker(QObject):
     error_occurred = pyqtSignal(str)
     polling_started = pyqtSignal()
     polling_finished = pyqtSignal()
+    progress = pyqtSignal(str)  # status message for UI
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -46,9 +47,11 @@ class _PollWorker(QObject):
         self.polling_started.emit()
         try:
             client = self._get_client()
+            self.progress.emit("Authenticating…")
             username = self._config.username or client.username
 
             # Fetch and parse notifications into events
+            self.progress.emit("Fetching notifications…")
             raw_notifications = client.fetch_notifications()
             events: list[NotificationEvent] = []
             for raw in raw_notifications:
@@ -58,11 +61,13 @@ class _PollWorker(QObject):
             self.notifications_ready.emit(events)
 
             # Fetch review-requested PRs
+            self.progress.emit("Fetching review requests…")
             prs = client.fetch_review_requested_prs(username)
             prs = [pr for pr in prs if not self._is_pr_filtered(pr)]
             self.review_prs_ready.emit(prs)
 
             # Fetch authored PRs
+            self.progress.emit("Fetching your PRs…")
             authored = client.fetch_authored_prs(username)
             authored = [pr for pr in authored if not self._is_pr_filtered(pr)]
             self.authored_prs_ready.emit(authored)
@@ -132,6 +137,8 @@ class Poller(QObject):
     # Emitted when polling starts/finishes (for UI animation)
     polling_started = pyqtSignal()
     polling_finished = pyqtSignal()
+    # Emitted with progress messages during polling
+    progress = pyqtSignal(str)
 
     def __init__(self, config: Config, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -157,6 +164,7 @@ class Poller(QObject):
         self._worker.error_occurred.connect(self.error_occurred)
         self._worker.polling_started.connect(self.polling_started)
         self._worker.polling_finished.connect(self.polling_finished)
+        self._worker.progress.connect(self.progress)
 
         # Timer fires on main thread, emits signal to trigger poll on worker thread
         self._timer = QTimer(self)
