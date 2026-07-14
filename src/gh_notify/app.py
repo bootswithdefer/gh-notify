@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSize
+from PyQt6.QtCore import QSize, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 ICON_PATH = Path(__file__).parent / "icons" / "gh-notify.svg"
 ICON_ATTENTION_PATH = Path(__file__).parent / "icons" / "gh-notify-attention.svg"
+ICON_POLL_PATHS = [Path(__file__).parent / "icons" / f"gh-notify-poll-{i}.svg" for i in range(4)]
 
 
 class GhNotifyApp:
@@ -40,6 +41,13 @@ class GhNotifyApp:
         self._review_prs: list[PullRequest] = []
         self._authored_prs: list[PullRequest] = []
 
+        # Polling animation state
+        self._poll_icons: list[QIcon] = []
+        self._poll_frame = 0
+        self._poll_timer = QTimer()
+        self._poll_timer.setInterval(200)
+        self._poll_timer.timeout.connect(self._animate_poll_icon)
+
         self._setup_tray()
         self._connect_signals()
 
@@ -50,6 +58,7 @@ class GhNotifyApp:
         # Load icon
         self._icon_normal = self._load_icon(ICON_PATH)
         self._icon_attention = self._load_icon(ICON_ATTENTION_PATH)
+        self._poll_icons = [self._load_icon(p) for p in ICON_POLL_PATHS]
         self._tray.setIcon(self._icon_normal)
         self._tray.setToolTip("gh-notify — GitHub PR Monitor")
 
@@ -93,6 +102,8 @@ class GhNotifyApp:
         self._poller.review_prs_updated.connect(self._on_review_prs_updated)
         self._poller.authored_prs_updated.connect(self._on_authored_prs_updated)
         self._poller.error_occurred.connect(self._on_error)
+        self._poller.polling_started.connect(self._on_polling_started)
+        self._poller.polling_finished.connect(self._on_polling_finished)
 
     def _on_new_events(self, events: list[NotificationEvent]) -> None:
         """Handle new notification events."""
@@ -179,6 +190,26 @@ class GhNotifyApp:
             for pr in overflow:
                 action = more_menu.addAction(f"{pr.display_name}: {_truncate(pr.title, 50)}")
                 action.triggered.connect(_make_open_handler(pr.html_url))
+
+    def _on_polling_started(self) -> None:
+        """Start the icon animation when polling begins."""
+        self._poll_frame = 0
+        self._poll_timer.start()
+
+    def _on_polling_finished(self) -> None:
+        """Stop the icon animation when polling completes."""
+        self._poll_timer.stop()
+        # Restore the appropriate static icon
+        if self._review_prs:
+            self._tray.setIcon(self._icon_attention)
+        else:
+            self._tray.setIcon(self._icon_normal)
+
+    def _animate_poll_icon(self) -> None:
+        """Advance to the next animation frame."""
+        if self._poll_icons:
+            self._tray.setIcon(self._poll_icons[self._poll_frame % len(self._poll_icons)])
+            self._poll_frame += 1
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Handle tray icon activation (left click)."""

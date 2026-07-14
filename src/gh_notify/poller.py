@@ -26,6 +26,8 @@ class _PollWorker(QObject):
     authored_prs_ready = pyqtSignal(list)  # list[PullRequest]
     poll_interval_changed = pyqtSignal(int)  # new interval in ms
     error_occurred = pyqtSignal(str)
+    polling_started = pyqtSignal()
+    polling_finished = pyqtSignal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -41,6 +43,7 @@ class _PollWorker(QObject):
     @pyqtSlot()
     def poll(self) -> None:
         """Perform a single polling cycle. Runs in the worker thread."""
+        self.polling_started.emit()
         try:
             client = self._get_client()
             username = self._config.username or client.username
@@ -73,6 +76,8 @@ class _PollWorker(QObject):
         except GitHubClientError as e:
             logger.exception("Polling error")
             self.error_occurred.emit(str(e))
+        finally:
+            self.polling_finished.emit()
 
     def update_config(self, config: Config) -> None:
         """Update configuration."""
@@ -124,6 +129,9 @@ class Poller(QObject):
     authored_prs_updated = pyqtSignal(list)  # list[PullRequest]
     # Emitted on error
     error_occurred = pyqtSignal(str)
+    # Emitted when polling starts/finishes (for UI animation)
+    polling_started = pyqtSignal()
+    polling_finished = pyqtSignal()
 
     def __init__(self, config: Config, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -147,6 +155,8 @@ class Poller(QObject):
         self._worker.authored_prs_ready.connect(self._on_authored_prs_ready)
         self._worker.poll_interval_changed.connect(self._on_poll_interval_changed)
         self._worker.error_occurred.connect(self.error_occurred)
+        self._worker.polling_started.connect(self.polling_started)
+        self._worker.polling_finished.connect(self.polling_finished)
 
         # Timer fires on main thread, emits signal to trigger poll on worker thread
         self._timer = QTimer(self)

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <circle cx="32" cy="32" r="30" fill="#24292f" stroke="#444d56" stroke-width="2"/>
+  <!-- Pull request icon (dimmed during polling) -->
+  <g fill="none" stroke="#58a6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.4">
+    <circle cx="22" cy="20" r="4" fill="#58a6ff"/>
+    <circle cx="22" cy="44" r="4" fill="#58a6ff"/>
+    <circle cx="42" cy="44" r="4" fill="#58a6ff"/>
+    <line x1="22" y1="24" x2="22" y2="40"/>
+    <path d="M 26 20 C 34 20, 42 28, 42 36"/>
+    <polyline points="38,33 42,36 46,33"/>
+  </g>
+  <!-- Spinning arc indicator -->
+  <g fill="none" stroke="#8b949e" stroke-width="2.5" stroke-linecap="round">
+    <path d="M 32 12 A 20 20 0 0 1 52 32"/>
+    <polyline points="50,26 52,32 46,32" fill="none"/>
+  </g>
+</svg>
